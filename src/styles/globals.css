@@ -1,0 +1,16 @@
+.bg-navbar {
+    background-color: var(--color-navbar);
+}
+
+.text-color {
+    color: var(--text-color-nav);
+}
+
+.text-color-navbar {
+    color: var(--text-color-nav);
+}
+
+.text-color-navbar:hover {
+    color: var(--text-color-nav-hover);
+    background-color: var(--bg-text-hover);
+}

@@ -1,0 +1,83 @@
+name: Deploy SRS Frontend
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+# Nada que identifique a conta ou a topologia da AWS fica neste arquivo.
+# Configurar em Settings → Secrets and variables → Actions:
+#   secrets.AWS_DEPLOY_ROLE_ARN  arn:aws:iam::<account-id>:role/<role-do-oidc>
+#   vars.AWS_REGION              região do ECR/ECS (ex.: us-east-1)
+#   vars.ECS_CLUSTER             nome do cluster ECS
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECR_REPOSITORY: srs-frontend
+  ECS_SERVICE: srs-frontend-service
+  CONTAINER_NAME: srs-frontend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Falha com mensagem clara em vez de deixar o erro estourar no login do ECR.
+      - name: Valida a configuração do deploy
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          for v in AWS_DEPLOY_ROLE_ARN AWS_REGION ECS_CLUSTER; do
+            if [ -z "${!v}" ]; then
+              echo "::error::$v não está configurado (Settings → Secrets and variables → Actions)."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login no Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag e push da imagem
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Baixa a Task Definition atual
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $ECR_REPOSITORY \
+            --query "taskDefinition" \
+            --output json > task-def.json
+
+      - name: Atualiza a imagem na Task Definition
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-def.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy no ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
